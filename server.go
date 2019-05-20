@@ -91,6 +91,7 @@ func New(token string, options ...ServerOption) *Server {
 	}
 	// bot, err :=  tgbotapi.NewBotAPIWithClient(token, s.httpClient)
 	s.client = NewClient(token, s.httpClient, apiBaseURL)
+	s.client.logger = s.logger
 	return s
 }
 
