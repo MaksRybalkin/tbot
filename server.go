@@ -186,7 +186,6 @@ func (s *Server) getUpdates() (chan *Update, error) {
 	if s.webhookURL != "" && s.listenAddr != "" {
 		return s.listenUpdates()
 	}
-	s.client.deleteWebhook()
 	return s.longPoolUpdates()
 }
 
@@ -231,6 +230,10 @@ func (s *Server) listenUpdates() (chan *Update, error) {
 
 		close(updates)
 		s.logger.Print("the updates channel is closed")
+
+		if err := s.client.deleteWebhook(); err != nil {
+			s.logger.Printf("failed to delete webhook, %v", err)
+		}
 	}()
 
 	return updates, nil
