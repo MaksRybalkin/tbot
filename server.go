@@ -1,12 +1,14 @@
 package tbot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -22,7 +24,9 @@ type Server struct {
 	client        *Client
 	token         string
 	logger        Logger
-	stop          chan struct{}
+	ctx           context.Context
+	ctxCancelFunc context.CancelFunc
+	wg            sync.WaitGroup
 	updatesParams url.Values
 	bufferSize    int
 	nextOffset    int
@@ -63,10 +67,14 @@ New creates new Server. Available options:
 	WithHTTPClient(client *http.Client)
 */
 func New(token string, options ...ServerOption) *Server {
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
-		httpClient: http.DefaultClient,
-		token:      token,
-		logger:     nopLogger{},
+		httpClient:    http.DefaultClient,
+		token:         token,
+		logger:        nopLogger{},
+		ctx:           ctx,
+		ctxCancelFunc: cancel,
+		wg:            sync.WaitGroup{},
 
 		editMessageHandler:     func(*Message) {},
 		channelPostHandler:     func(*Message) {},
@@ -123,42 +131,44 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	for {
-		select {
-		case update := <-updates:
-			handleUpdate := func(update *Update) {
-				switch {
-				case update.Message != nil:
-					s.handleMessage(update.Message)
-				case update.EditedMessage != nil:
-					s.editMessageHandler(update.EditedMessage)
-				case update.ChannelPost != nil:
-					s.channelPostHandler(update.ChannelPost)
-				case update.EditedChannelPost != nil:
-					s.editChannelPostHandler(update.EditedChannelPost)
-				case update.InlineQuery != nil:
-					s.inlineQueryHandler(update.InlineQuery)
-				case update.ChosenInlineResult != nil:
-					s.inlineResultHandler(update.ChosenInlineResult)
-				case update.CallbackQuery != nil:
-					s.callbackHandler(update.CallbackQuery)
-				case update.ShippingQuery != nil:
-					s.shippingHandler(update.ShippingQuery)
-				case update.PreCheckoutQuery != nil:
-					s.preCheckoutHandler(update.PreCheckoutQuery)
-				case update.Poll != nil:
-					s.pollHandler(update.Poll)
-				}
+
+	for update := range updates {
+		handleUpdate := func(update *Update) {
+			switch {
+			case update.Message != nil:
+				s.handleMessage(update.Message)
+			case update.EditedMessage != nil:
+				s.editMessageHandler(update.EditedMessage)
+			case update.ChannelPost != nil:
+				s.channelPostHandler(update.ChannelPost)
+			case update.EditedChannelPost != nil:
+				s.editChannelPostHandler(update.EditedChannelPost)
+			case update.InlineQuery != nil:
+				s.inlineQueryHandler(update.InlineQuery)
+			case update.ChosenInlineResult != nil:
+				s.inlineResultHandler(update.ChosenInlineResult)
+			case update.CallbackQuery != nil:
+				s.callbackHandler(update.CallbackQuery)
+			case update.ShippingQuery != nil:
+				s.shippingHandler(update.ShippingQuery)
+			case update.PreCheckoutQuery != nil:
+				s.preCheckoutHandler(update.PreCheckoutQuery)
+			case update.Poll != nil:
+				s.pollHandler(update.Poll)
 			}
-			var f = handleUpdate
-			for i := len(s.middlewares) - 1; i >= 0; i-- {
-				f = s.middlewares[i](f)
-			}
-			go f(update)
-		case <-s.stop:
-			return nil
 		}
+		var f = handleUpdate
+		for i := len(s.middlewares) - 1; i >= 0; i-- {
+			f = s.middlewares[i](f)
+		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			f(update)
+		}()
 	}
+
+	return nil
 }
 
 // Client returns Telegram API Client
@@ -168,7 +178,8 @@ func (s *Server) Client() *Client {
 
 // Stop listening for updates
 func (s *Server) Stop() {
-	s.stop <- struct{}{}
+	s.ctxCancelFunc()
+	s.wg.Wait()
 }
 
 func (s *Server) getUpdates() (chan *Update, error) {
@@ -198,17 +209,41 @@ func (s *Server) listenUpdates() (chan *Update, error) {
 	if err != nil {
 		return nil, err
 	}
-	go http.Serve(l, http.HandlerFunc(handler))
+
+	srv := http.Server{
+		Handler: http.HandlerFunc(handler),
+	}
+
+	go func() {
+		s.logger.Printf("starting server at: %s", l.Addr())
+		if err = srv.Serve(l); err != nil {
+			s.logger.Printf("serve is finished, %v", err)
+		}
+	}()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		<-s.ctx.Done()
+		if err := srv.Shutdown(context.Background()); err != nil {
+			s.logger.Printf("failed to shut down server, %v", err)
+		}
+
+		close(updates)
+		s.logger.Print("the updates channel is closed")
+	}()
+
 	return updates, nil
 }
 
 func (s *Server) longPoolUpdates() (chan *Update, error) {
 	s.logger.Debugf("fetching updates...")
 	endpoint := fmt.Sprintf("%s/bot%s/%s", apiBaseURL, s.token, "getUpdates")
-	req, err := http.NewRequest("GET", endpoint, nil)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(s.ctx)
 	params := s.updatesParams
 	if params == nil {
 		params = url.Values{}
@@ -216,12 +251,19 @@ func (s *Server) longPoolUpdates() (chan *Update, error) {
 	params.Set("timeout", fmt.Sprint(3600))
 	req.URL.RawQuery = params.Encode()
 	updates := make(chan *Update, s.bufferSize)
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			params.Set("offset", fmt.Sprint(s.nextOffset))
 			req.URL.RawQuery = params.Encode()
 			resp, err := s.httpClient.Do(req)
 			if err != nil {
+				if s.ctx.Err() != nil {
+					close(updates)
+					s.logger.Print("the updates channel is closed")
+					return
+				}
 				s.logger.Errorf("unable to perform request: %v", err)
 				time.Sleep(1 * time.Second)
 				continue
