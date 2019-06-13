@@ -184,6 +184,22 @@ type KeyboardButton struct {
 	RequestLocation bool   `json:"request_location"`
 }
 
+type WebhookInfo struct {
+	URL                  string    `json:"url"`
+	HasCustomCertificate bool      `json:"has_custom_certificate"`
+	PendingUpdateCount   int       `json:"pending_update_count"`
+	LastErrorDate        int64     `json:"last_error_date"`
+	LastErrorMessage     string    `json:"last_error_message"`
+	MaxConnections       int       `json:"max_connections"`
+	AllowedUpdates       []*Update `json:"allowed_updates"`
+}
+
+func (c *Client) GetWebhookInfo() (*WebhookInfo, error) {
+	webhookInfo := &WebhookInfo{}
+	err := c.doRequest("getWebhookInfo", url.Values{}, webhookInfo)
+	return webhookInfo, err
+}
+
 func (c *Client) setWebhook(webhookURL string) error {
 	req := url.Values{}
 	req.Set("url", webhookURL)
