@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/yanzay/tbot"
@@ -158,6 +159,76 @@ func TestSendPhotoFile(t *testing.T) {
 	}
 	if msg.MessageID == 0 {
 		t.Fatalf("empty message id")
+	}
+}
+
+func TestClient_SendVideoNoteFile(t *testing.T) {
+	c := testClient(t, `
+		{
+			"ok": true,
+			"result": {"message_id": 321}
+		}
+	`)
+	msg, err := c.SendVideoNoteFile("123", "client_test.go", tbot.OptThumb("client.go"))
+	if err != nil {
+		t.Fatalf("error on sendPhotoFile: %v", err)
+	}
+	if msg.MessageID == 0 {
+		t.Fatalf("empty message id")
+	}
+}
+
+func TestClient_UploadStickerFile(t *testing.T) {
+	c := testClient(t, `{
+    "ok": true,
+    "result": {
+        "file_id": "BQADAgADSgMAAs4zEEjkxxc0khLXSgI",
+        "file_size": 81692
+    }
+}`)
+
+	wantFile := tbot.File{
+		FileID:   "BQADAgADSgMAAs4zEEjkxxc0khLXSgI",
+		FileSize: 81692,
+	}
+
+	gotFile, err := c.UploadStickerFile(1, "client.go")
+	if err != nil {
+		t.Fatalf("error on UploadStickerFile: %v", err)
+	}
+
+	if wantFile != *gotFile {
+		t.Fatalf("want %v, got %v", wantFile, *gotFile)
+	}
+}
+
+func TestClient_UploadStickerReader(t *testing.T) {
+	c := testClient(t, `{
+    "ok": true,
+    "result": {
+        "file_id": "BQADAgADSgMAAs4zEEjkxxc0khLXSgI",
+        "file_size": 81692
+    }
+}`)
+
+	wantFile := tbot.File{
+		FileID:   "BQADAgADSgMAAs4zEEjkxxc0khLXSgI",
+		FileSize: 81692,
+	}
+
+	r, err := os.Open("client.go")
+	if err != nil {
+		t.Fatalf("failed to open file, %v", err)
+	}
+	defer r.Close()
+
+	gotFile, err := c.UploadStickerReader(1, r)
+	if err != nil {
+		t.Fatalf("error on UploadStickerFile: %v", err)
+	}
+
+	if wantFile != *gotFile {
+		t.Fatalf("want %v, got %v", wantFile, *gotFile)
 	}
 }
 

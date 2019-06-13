@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 )
@@ -36,6 +38,74 @@ func NewClient(token string, httpClient *http.Client, baseURL string) *Client {
 		filesTrailURL: "%s/file/bot%s/%s",
 		logger:        nopLogger{},
 	}
+}
+
+type multipartFilesWriter interface {
+	Write(*multipart.Writer) error
+}
+
+type files struct {
+	files []inputFile
+}
+
+func (m *files) Write(w *multipart.Writer) error {
+	for _, file := range m.files {
+		f, err := os.Open(file.name)
+		if err != nil {
+			return err
+		}
+
+		fileWriter, err := w.CreateFormFile(file.field, file.name)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(fileWriter, f)
+		if err != nil {
+			return fmt.Errorf("failed to write file, %v", err)
+		}
+		err = f.Close()
+		if err != nil {
+			return fmt.Errorf("failed to close file, %v", err)
+		}
+	}
+
+	return nil
+}
+
+func (m *files) Add(f ...inputFile) {
+	m.files = append(m.files, f...)
+}
+
+type readers struct {
+	readers map[string]io.Reader
+}
+
+func newMultipartReaders() *readers {
+	return &readers{
+		readers: make(map[string]io.Reader),
+	}
+}
+
+func (m *readers) Add(field string, r io.Reader) {
+	m.readers[field] = r
+}
+
+func (m *readers) Write(w *multipart.Writer) error {
+	i := 0
+	for field, reader := range m.readers {
+		fileWriter, err := w.CreateFormFile(field, fmt.Sprintf("file_%d", i))
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(fileWriter, reader)
+		if err != nil {
+			return fmt.Errorf("failed to write writer, %v", err)
+		}
+		i++
+	}
+
+	return nil
 }
 
 type inputFile struct {
@@ -269,8 +339,12 @@ func (c *Client) SendAudioFile(chatID string, filename string, opts ...SendOptio
 	for _, opt := range opts {
 		opt(req)
 	}
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "audio", name: filename})
+
 	msg := &Message{}
-	err := c.doRequestWithFiles("sendAudio", req, msg, inputFile{field: "audio", name: filename})
+	err := c.doRequestWithFiles("sendAudio", req, msg, mwf)
 	return msg, err
 }
 
@@ -329,8 +403,12 @@ func (c *Client) SendPhotoFile(chatID string, filename string, opts ...SendOptio
 	for _, opt := range opts {
 		opt(req)
 	}
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "photo", name: filename})
+
 	msg := &Message{}
-	err := c.doRequestWithFiles("sendPhoto", req, msg, inputFile{field: "photo", name: filename})
+	err := c.doRequestWithFiles("sendPhoto", req, msg, mwf)
 	return msg, err
 }
 
@@ -380,8 +458,12 @@ func (c *Client) SendDocumentFile(chatID string, filename string, opts ...SendOp
 	for _, opt := range opts {
 		opt(req)
 	}
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "document", name: filename})
+
 	msg := &Message{}
-	err := c.doRequestWithFiles("sendDocument", req, msg, inputFile{field: "document", name: filename})
+	err := c.doRequestWithFiles("sendDocument", req, msg, mwf)
 	return msg, err
 }
 
@@ -456,8 +538,12 @@ func (c *Client) SendVideoFile(chatID string, filename string, opts ...SendOptio
 	for _, opt := range opts {
 		opt(req)
 	}
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "video", name: filename})
+
 	msg := &Message{}
-	err := c.doRequestWithFiles("sendVideo", req, msg, inputFile{field: "video", name: filename})
+	err := c.doRequestWithFiles("sendVideo", req, msg, mwf)
 	return msg, err
 }
 
@@ -500,7 +586,9 @@ func (c *Client) SendAnimation(chatID string, fileID string, opts ...SendOption)
 	if len(req.Get("thumb")) > 0 {
 		thumb := req.Get("thumb")
 		req.Del("thumb")
-		err = c.doRequestWithFiles("sendAnimation", req, msg, inputFile{field: "thumb", name: thumb})
+		mwf := &files{}
+		mwf.Add(inputFile{field: "thumb", name: thumb})
+		err = c.doRequestWithFiles("sendAnimation", req, msg, mwf)
 	} else {
 		err = c.doRequest("sendAnimation", req, msg)
 	}
@@ -532,13 +620,15 @@ func (c *Client) SendAnimationFile(chatID string, filename string, opts ...SendO
 		opt(req)
 	}
 	msg := &Message{}
-	files := []inputFile{{field: "animation", name: filename}}
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "animation", name: filename})
 	if len(req.Get("thumb")) > 0 {
 		thumb := req.Get("thumb")
 		req.Del("thumb")
-		files = append(files, inputFile{field: "thumb", name: thumb})
+		mwf.Add(inputFile{field: "thumb", name: thumb})
 	}
-	err := c.doRequestWithFiles("sendAnimation", req, msg, files...)
+	err := c.doRequestWithFiles("sendAnimation", req, msg, mwf)
 	return msg, err
 }
 
@@ -590,8 +680,12 @@ func (c *Client) SendVoiceFile(chatID string, filename string, opts ...SendOptio
 	for _, opt := range opts {
 		opt(req)
 	}
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "voice", name: filename})
+
 	msg := &Message{}
-	err := c.doRequestWithFiles("sendVoice", req, msg, inputFile{field: "voice", name: filename})
+	err := c.doRequestWithFiles("sendVoice", req, msg, mwf)
 	return msg, err
 }
 
@@ -630,7 +724,9 @@ func (c *Client) SendVideoNote(chatID string, fileID string, opts ...SendOption)
 	if len(req.Get("thumb")) > 0 {
 		thumb := req.Get("thumb")
 		req.Del("thumb")
-		err = c.doRequestWithFiles("sendVideoNote", req, msg, inputFile{field: "thumb", name: thumb})
+		mwf := &files{}
+		mwf.Add(inputFile{field: "thumb", name: thumb})
+		err = c.doRequestWithFiles("sendVideoNote", req, msg, mwf)
 	} else {
 		err = c.doRequest("sendVideoNote", req, msg)
 	}
@@ -657,14 +753,17 @@ func (c *Client) SendVideoNoteFile(chatID string, filename string, opts ...SendO
 	for _, opt := range opts {
 		opt(req)
 	}
-	files := []inputFile{{field: "video_note", name: filename}}
+
+	mfw := &files{}
+	mfw.Add(inputFile{field: "video_note", name: filename})
+
 	if len(req.Get("thumb")) > 0 {
 		thumb := req.Get("thumb")
 		req.Del("thumb")
-		files = append(files, inputFile{field: "thumb", name: thumb})
+		mfw.Add(inputFile{field: "thumb", name: thumb})
 	}
 	msg := &Message{}
-	err := c.doRequestWithFiles("sendVideoNote", req, msg, files...)
+	err := c.doRequestWithFiles("sendVideoNote", req, msg, mfw)
 	return msg, err
 }
 
@@ -1130,7 +1229,11 @@ func (c *Client) SetChatPhoto(chatID string, filename string) error {
 	req := url.Values{}
 	req.Set("chat_id", chatID)
 	var updated bool
-	return c.doRequestWithFiles("setChatPhoto", req, &updated, inputFile{field: "photo", name: filename})
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "photo", name: filename})
+
+	return c.doRequestWithFiles("setChatPhoto", req, &updated, mwf)
 }
 
 /*
@@ -1458,8 +1561,38 @@ func (c *Client) SendStickerFile(chatID string, filename string, opts ...SendOpt
 	for _, opt := range opts {
 		opt(req)
 	}
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "sticker", name: filename})
+
 	msg := &Message{}
-	err := c.doRequestWithFiles("sendSticker", req, msg, inputFile{field: "sticker", name: filename})
+	err := c.doRequestWithFiles("sendSticker", req, msg, mwf)
+	return msg, err
+}
+
+/*
+ SendStickerReader sends sticker using reader. Available options:
+	- OptDisableNotification
+	- OptReplyToMessageID(id int)
+	- OptInlineKeyboardMarkup(markup *InlineKeyboardMarkup)
+	- OptReplyKeyboardMarkup(markup *ReplyKeyboardMarkup)
+	- OptReplyKeyboardRemove
+	- OptReplyKeyboardRemoveSelective
+	- OptForceReply
+	- OptForceReplySelective
+*/
+func (c *Client) SendStickerReader(chatID string, r io.Reader, opts ...SendOption) (*Message, error) {
+	req := url.Values{}
+	req.Set("chat_id", chatID)
+	for _, opt := range opts {
+		opt(req)
+	}
+
+	mr := newMultipartReaders()
+	mr.Add("sticker", r)
+
+	msg := &Message{}
+	err := c.doRequestWithFiles("sendSticker", req, msg, mr)
 	return msg, err
 }
 
@@ -1512,7 +1645,25 @@ func (c *Client) UploadStickerFile(userID int, filename string) (*File, error) {
 	req := url.Values{}
 	req.Set("user_id", fmt.Sprint(userID))
 	file := &File{}
-	err := c.doRequestWithFiles("uploadStickerFile", req, &file, inputFile{field: "png_sticker", name: filename})
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "png_sticker", name: filename})
+
+	err := c.doRequestWithFiles("uploadStickerFile", req, &file, mwf)
+	return file, err
+}
+
+// UploadStickerReader upload a .png file with a sticker for later use in CreateNewStickerSet and AddStickerToSet
+// using reader
+func (c *Client) UploadStickerReader(userID int, r io.Reader) (*File, error) {
+	req := url.Values{}
+	req.Set("user_id", fmt.Sprint(userID))
+	file := &File{}
+
+	mr := newMultipartReaders()
+	mr.Add("png_sticker", r)
+
+	err := c.doRequestWithFiles("uploadStickerFile", req, &file, mr)
 	return file, err
 }
 
@@ -1544,7 +1695,32 @@ func (c *Client) CreateNewStickerSetFile(userID int, name, title, stickerFilenam
 		opt(req)
 	}
 	var created bool
-	return c.doRequestWithFiles("createNewStickerSet", req, &created, inputFile{field: "png_sticker", name: stickerFilename})
+
+	mwf := &files{}
+	mwf.Add(inputFile{field: "png_sticker", name: stickerFilename})
+
+	return c.doRequestWithFiles("createNewStickerSet", req, &created, mwf)
+}
+
+// CreateNewStickerSetReader creates new sticker set with sticker file using reader.
+// Available options:
+//	 - OptContainsMasks
+//	 - OptMaskPosition(pos *MaskPosition)
+func (c *Client) CreateNewStickerSetReader(userID int, name, title string, r io.Reader, emojis string, opts ...SendOption) error {
+	req := url.Values{}
+	req.Set("user_id", fmt.Sprint(userID))
+	req.Set("name", name)
+	req.Set("title", title)
+	req.Set("emojis", emojis)
+	for _, opt := range opts {
+		opt(req)
+	}
+	var created bool
+
+	mr := newMultipartReaders()
+	mr.Add("png_sticker", r)
+
+	return c.doRequestWithFiles("createNewStickerSet", req, &created, mr)
 }
 
 /*
@@ -1579,7 +1755,35 @@ func (c *Client) AddStickerToSetFile(userID int, name, filename, emojis string, 
 		opt(req)
 	}
 	var added bool
-	return c.doRequestWithFiles("addStickerToSet", req, &added, inputFile{field: "png_sticker", name: filename})
+
+	mfw := &files{}
+	mfw.Add(inputFile{field: "png_sticker", name: filename})
+
+	err := c.doRequestWithFiles("addStickerToSet", req, &added, mfw)
+
+	return err
+}
+
+// AddStickerToSetReader add a new sticker file to a set created by the bot using reader.
+// Available options:
+//	 - OptMaskPosition(pos *MaskPosition)
+
+func (c *Client) AddStickerToSetReader(userID int, name string, r io.Reader, emojis string, opts ...SendOption) error {
+	req := url.Values{}
+	req.Set("user_id", fmt.Sprint(userID))
+	req.Set("name", name)
+	req.Set("emojis", emojis)
+	for _, opt := range opts {
+		opt(req)
+	}
+	var added bool
+
+	mr := newMultipartReaders()
+	mr.Add("png_sticker", r)
+
+	err := c.doRequestWithFiles("addStickerToSet", req, &added, mr)
+
+	return err
 }
 
 /*
@@ -1596,7 +1800,7 @@ func (c *Client) AddStickerToSet(userID int, name, fileID, emojis string, opts .
 		opt(req)
 	}
 	var added bool
-	return c.doRequestWithFiles("addStickerToSet", req, &added)
+	return c.doRequest("addStickerToSet", req, &added)
 }
 
 /*

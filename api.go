@@ -7,7 +7,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"os"
 )
 
 type responseParameters struct {
@@ -51,7 +50,7 @@ func (c *Client) doRequest(method string, request url.Values, response interface
 	return json.Unmarshal(apiResp.Result, response)
 }
 
-func (c *Client) doRequestWithFiles(method string, request url.Values, response interface{}, files ...inputFile) error {
+func (c *Client) doRequestWithFiles(method string, request url.Values, response interface{}, mfw multipartFilesWriter) error {
 	endpoint := fmt.Sprintf(c.url, method)
 	r, w := io.Pipe()
 
@@ -75,19 +74,8 @@ func (c *Client) doRequestWithFiles(method string, request url.Values, response 
 	for k := range request {
 		mw.WriteField(k, request.Get(k))
 	}
-	for _, file := range files {
-		f, err := os.Open(file.name)
-		if err != nil {
-			return err
-		}
-		fileWriter, err := mw.CreateFormFile(file.field, file.name)
-		if err != nil {
-			return err
-		}
 
-		io.Copy(fileWriter, f)
-		f.Close()
-	}
+	_ = mfw.Write(mw)
 
 	mw.Close()
 	w.Close()
