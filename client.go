@@ -1,8 +1,11 @@
 package tbot
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,6 +16,8 @@ import (
 type Client struct {
 	token         string
 	url           string
+	baseURL       string
+	filesTrailURL string
 	httpClient    *http.Client
 	nextOffset    int
 	logger        Logger
@@ -24,9 +29,12 @@ type Client struct {
 // NewClient creates new Telegram API client
 func NewClient(token string, httpClient *http.Client, baseURL string) *Client {
 	return &Client{
-		token:      token,
-		httpClient: httpClient,
-		url:        fmt.Sprintf("%s/bot%s/", baseURL, token) + "%s",
+		token:         token,
+		httpClient:    httpClient,
+		url:           fmt.Sprintf("%s/bot%s/", baseURL, token) + "%s",
+		baseURL:       baseURL,
+		filesTrailURL: "%s/file/bot%s/%s",
+		logger:        nopLogger{},
 	}
 }
 
@@ -979,6 +987,36 @@ func (c *Client) GetFile(fileID string) (*File, error) {
 	file := &File{}
 	err := c.doRequest("getFile", req, file)
 	return file, err
+}
+
+// DownloadFile downloads file from telegram server using FilePath in given parameter
+func (c *Client) DownloadFile(file File) (io.Reader, error) {
+	if len(file.FilePath) == 0 {
+		return nil, fmt.Errorf("filepath is empty")
+	}
+
+	fileURL := fmt.Sprintf(c.filesTrailURL, c.baseURL, c.token, file.FilePath)
+	r, err := http.NewRequest(http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request, %v", err)
+	}
+
+	resp, err := c.httpClient.Do(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download file, %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("received status code is %d, not %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body, %v", err)
+	}
+
+	return bytes.NewReader(body), nil
 }
 
 // KickChatMember options
